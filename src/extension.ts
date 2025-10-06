@@ -1,12 +1,19 @@
+// src/extension.ts
 import * as vscode from 'vscode';
 import { WebStatusApiClient } from './webStatusApi';
 import { CompatibilityDiagnosticProvider } from './diagnosticProvider';
 import { SUPPORTED_LANGUAGES } from './utils/constants';
+import { SecretStorageService } from './services/secretStorage';
+import { GeminiService } from './services/geminiService';
+import { CompatibilityCodeActionProvider } from './codeActionProvider';
+import { DashboardProvider } from './dashboardProvider';
 
 let outputChannel: vscode.OutputChannel;
 let apiClient: WebStatusApiClient;
 let statusBarItem: vscode.StatusBarItem;
 let diagnosticProvider: CompatibilityDiagnosticProvider;
+let geminiService: GeminiService;
+let dashboardProvider: DashboardProvider;
 
 export async function activate(context: vscode.ExtensionContext) {
     console.log('BaselineGuard: Extension is activating...');
@@ -18,11 +25,20 @@ export async function activate(context: vscode.ExtensionContext) {
         
         outputChannel.appendLine('🚀 BaselineGuard: Extension activated successfully!');
         
+        // Initialize secret storage
+        SecretStorageService.initialize(context);
+        outputChannel.appendLine('✅ Secret storage initialized');
+        
+        // Initialize Gemini service
+        geminiService = GeminiService.getInstance();
+        geminiService.setOutputChannel(outputChannel);
+        await geminiService.initialize();
+        
         // Create status bar item
         statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
         statusBarItem.command = 'baselineGuard.openDashboard';
         statusBarItem.text = '$(shield) BaselineGuard';
-        statusBarItem.tooltip = 'BaselineGuard - Web Compatibility Checker';
+        statusBarItem.tooltip = 'BaselineGuard - AI-Powered Web Compatibility Checker';
         statusBarItem.show();
         context.subscriptions.push(statusBarItem);
         
@@ -43,14 +59,38 @@ export async function activate(context: vscode.ExtensionContext) {
         statusBarItem.text = `$(shield) BaselineGuard (${features.length})`;
         outputChannel.appendLine(`✅ Loaded ${features.length} web features`);
         
+        // Register Dashboard Provider
+        dashboardProvider = new DashboardProvider(context.extensionUri, apiClient);
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider(
+                DashboardProvider.viewType,
+                dashboardProvider
+            )
+        );
+        outputChannel.appendLine('✅ Dashboard provider registered');
+        
+        // Register Code Action Provider (Quick Fix)
+        const codeActionProvider = new CompatibilityCodeActionProvider();
+        context.subscriptions.push(
+            vscode.languages.registerCodeActionsProvider(
+                SUPPORTED_LANGUAGES.map(lang => ({ language: lang })),
+                codeActionProvider,
+                {
+                    providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]
+                }
+            )
+        );
+        outputChannel.appendLine('✅ Code action provider registered (Quick Fix enabled)');
+        
         // Register commands
         registerCommands(context);
         
         // Set up file analysis
         await setupFileAnalysis(context);
         
-        // Show activation message
-        vscode.window.showInformationMessage('BaselineGuard extension is now active! 🎉');
+        // Show activation message with AI status
+        const aiStatus = geminiService.isAvailable() ? '🤖 AI Ready' : '⚠️ Setup AI Key';
+        vscode.window.showInformationMessage(`BaselineGuard extension is now active! 🎉 (${aiStatus})`);
         outputChannel.show();
         
         console.log('BaselineGuard: Extension activated successfully');
@@ -138,7 +178,6 @@ async function updateStatusBarForDocument(document: vscode.TextDocument) {
             statusBarItem.text = `$(shield) BaselineGuard: ${warnings}⚠️ ${infos}🟡 ${hints}✅`;
             statusBarItem.tooltip = `BaselineGuard - ${issues.length} compatibility findings\n${warnings} limited, ${infos} newly available, ${hints} widely available`;
         } else {
-            const cacheInfo = apiClient.getCacheInfo();
             statusBarItem.text = `$(shield) BaselineGuard: Clean ✅`;
             statusBarItem.tooltip = `BaselineGuard - No compatibility issues found`;
         }
@@ -149,7 +188,7 @@ async function updateStatusBarForDocument(document: vscode.TextDocument) {
 }
 
 function registerCommands(context: vscode.ExtensionContext) {
-    // Hello command with API info
+    // Hello command
     const helloCommand = vscode.commands.registerCommand('baselineGuard.hello', async () => {
         try {
             const cacheInfo = apiClient.getCacheInfo();
@@ -162,41 +201,79 @@ function registerCommands(context: vscode.ExtensionContext) {
                 analysisInfo = `\nCurrent file: ${issues.length} compatibility issues`;
             }
             
-            const message = `Hello from BaselineGuard! 🛡️\n\nFeatures cached: ${cacheInfo.size}\nLast updated: ${new Date(cacheInfo.lastFetch).toLocaleString()}${analysisInfo}`;
+            const aiStatus = geminiService.isAvailable() ? '✅ AI Ready' : '⚠️ Setup Required';
+            const message = `Hello from BaselineGuard! 🛡️\n\nFeatures cached: ${cacheInfo.size}\nLast updated: ${new Date(cacheInfo.lastFetch).toLocaleString()}\nAI Status: ${aiStatus}${analysisInfo}`;
             vscode.window.showInformationMessage(message);
             outputChannel.appendLine('✅ Hello command executed');
         } catch (error) {
-            vscode.window.showInformationMessage('Hello from BaselineGuard! 🛡️ (API not loaded)');
+            vscode.window.showInformationMessage('Hello from BaselineGuard! 🛡️');
             outputChannel.appendLine(`⚠️ Hello command: ${error}`);
         }
     });
     
-    // Dashboard command with real data
+    // Dashboard command
     const dashboardCommand = vscode.commands.registerCommand('baselineGuard.openDashboard', async () => {
         try {
-            statusBarItem.text = '$(loading~spin) Loading...';
-            const features = await apiClient.fetchFeatures();
-            
-            // Count features by status
-            const stats = {
-                total: features.length,
-                newly: features.filter(f => f.baseline?.status === 'newly').length,
-                widely: features.filter(f => f.baseline?.status === 'widely').length,
-                limited: features.filter(f => f.baseline?.status === 'limited').length,
-                unknown: features.filter(f => !f.baseline).length
-            };
-            
-            const message = `📊 BaselineGuard Dashboard\n\nTotal Features: ${stats.total}\n✅ Widely Available: ${stats.widely}\n🟡 Newly Available: ${stats.newly}\n⚠️ Limited Availability: ${stats.limited}\n❓ Unknown Status: ${stats.unknown}`;
-            
-            vscode.window.showInformationMessage(message);
-            statusBarItem.text = `$(shield) BaselineGuard (${features.length})`;
-            outputChannel.appendLine(`✅ Dashboard: ${features.length} features displayed`);
-            
+            await vscode.commands.executeCommand('baselineGuard.dashboardView.focus');
+            outputChannel.appendLine('✅ Dashboard opened');
         } catch (error) {
-            vscode.window.showErrorMessage('Failed to load dashboard data');
-            statusBarItem.text = '$(shield) BaselineGuard: Error';
+            vscode.window.showErrorMessage('Failed to open dashboard');
             outputChannel.appendLine(`❌ Dashboard error: ${error}`);
         }
+    });
+
+    // Show Interactive Dashboard
+    const showWebviewCommand = vscode.commands.registerCommand('baselineGuard.showWebview', async () => {
+        try {
+            await vscode.commands.executeCommand('baselineGuard.dashboardView.focus');
+            outputChannel.appendLine('✅ Interactive dashboard opened');
+        } catch (error) {
+            vscode.window.showErrorMessage('Failed to show dashboard');
+            outputChannel.appendLine(`❌ Webview error: ${error}`);
+        }
+    });
+    
+    // DEBUG API COMMAND - Shows actual feature IDs
+    const debugApiCommand = vscode.commands.registerCommand('baselineGuard.debugApi', async () => {
+        const features = await apiClient.fetchFeatures();
+        
+        // Search for observer-related features
+        const observerFeatures = features.filter(f => 
+            f.feature_id.toLowerCase().includes('observer') ||
+            f.name.toLowerCase().includes('observer')
+        );
+        
+        // Search for share/clipboard features
+        const shareFeatures = features.filter(f =>
+            f.feature_id.toLowerCase().includes('share') ||
+            f.feature_id.toLowerCase().includes('clipboard') ||
+            f.name.toLowerCase().includes('share') ||
+            f.name.toLowerCase().includes('clipboard')
+        );
+        
+        let output = '🔍 ACTUAL Feature IDs in WebStatus API:\n\n';
+        output += '=== OBSERVER FEATURES ===\n';
+        observerFeatures.forEach(f => {
+            output += `ID: ${f.feature_id}\nName: ${f.name}\n\n`;
+        });
+        
+        output += '\n=== SHARE/CLIPBOARD FEATURES ===\n';
+        shareFeatures.forEach(f => {
+            output += `ID: ${f.feature_id}\nName: ${f.name}\n\n`;
+        });
+        
+        output += '\n=== FIRST 50 FEATURES (Sample) ===\n';
+        features.slice(0, 50).forEach((f, i) => {
+            output += `${i + 1}. ${f.feature_id} - ${f.name}\n`;
+        });
+        
+        const doc = await vscode.workspace.openTextDocument({
+            content: output,
+            language: 'plaintext'
+        });
+        await vscode.window.showTextDocument(doc);
+        
+        outputChannel.appendLine(`✅ Listed ${features.length} features from API`);
     });
     
     // Refresh command
@@ -205,11 +282,13 @@ function registerCommands(context: vscode.ExtensionContext) {
             statusBarItem.text = '$(loading~spin) Refreshing...';
             outputChannel.appendLine('🔄 Refreshing data...');
             
-            // Force refresh by clearing cache
             apiClient.forceRefresh();
             const features = await apiClient.fetchFeatures();
             
-            // Re-analyze current document if supported
+            if (dashboardProvider) {
+                await dashboardProvider.refresh();
+            }
+            
             const activeEditor = vscode.window.activeTextEditor;
             if (activeEditor && SUPPORTED_LANGUAGES.includes(activeEditor.document.languageId as any)) {
                 await analyzeDocument(activeEditor.document);
@@ -228,7 +307,7 @@ function registerCommands(context: vscode.ExtensionContext) {
         }
     });
     
-    // Analyze current file command
+    // Analyze file command
     const analyzeFileCommand = vscode.commands.registerCommand('baselineGuard.analyzeFile', async () => {
         const activeEditor = vscode.window.activeTextEditor;
         if (!activeEditor) {
@@ -237,7 +316,7 @@ function registerCommands(context: vscode.ExtensionContext) {
         }
         
         if (!SUPPORTED_LANGUAGES.includes(activeEditor.document.languageId as any)) {
-            vscode.window.showWarningMessage(`File type '${activeEditor.document.languageId}' is not supported for analysis`);
+            vscode.window.showWarningMessage(`File type '${activeEditor.document.languageId}' is not supported`);
             return;
         }
         
@@ -251,22 +330,21 @@ function registerCommands(context: vscode.ExtensionContext) {
             
             if (issues.length > 0) {
                 vscode.window.showInformationMessage(`Analysis complete: ${issues.length} compatibility findings`);
-                // Open Problems panel to show results
                 vscode.commands.executeCommand('workbench.panel.markers.view.focus');
             } else {
                 vscode.window.showInformationMessage('Analysis complete: No compatibility issues found! ✅');
             }
             
-            outputChannel.appendLine(`✅ Manual analysis: ${issues.length} findings in ${activeEditor.document.fileName}`);
+            outputChannel.appendLine(`✅ Manual analysis: ${issues.length} findings`);
             
         } catch (error) {
             vscode.window.showErrorMessage('Failed to analyze file');
-            outputChannel.appendLine(`❌ Manual analysis failed: ${error}`);
+            outputChannel.appendLine(`❌ Analysis failed: ${error}`);
             statusBarItem.text = '$(shield) BaselineGuard: Error';
         }
     });
     
-    // Toggle extension command
+    // Toggle command
     const toggleCommand = vscode.commands.registerCommand('baselineGuard.toggle', async () => {
         const config = vscode.workspace.getConfiguration('baselineGuard');
         const enabled = config.get<boolean>('enabled', true);
@@ -276,23 +354,220 @@ function registerCommands(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(`BaselineGuard ${status}`);
         outputChannel.appendLine(`🔄 Extension ${status}`);
         
-        // Update status bar to reflect state
-        if (!enabled) {
-            statusBarItem.text = '$(shield) BaselineGuard: Enabled';
-        } else {
-            statusBarItem.text = '$(shield) BaselineGuard: Disabled';
-        }
+        statusBarItem.text = `$(shield) BaselineGuard: ${!enabled ? 'Enabled' : 'Disabled'}`;
     });
     
-    context.subscriptions.push(
-        helloCommand, 
-        dashboardCommand, 
-        refreshCommand, 
-        analyzeFileCommand,
-        toggleCommand
+    // Setup API Key command
+    const setupKeyCommand = vscode.commands.registerCommand('baselineGuard.setupGeminiKey', async () => {
+        const apiKey = await vscode.window.showInputBox({
+            prompt: 'Enter your Gemini API Key (Get it from: https://aistudio.google.com/app/apikey)',
+            password: true,
+            placeHolder: 'AIza...',
+            ignoreFocusOut: true,
+            validateInput: (value) => {
+                if (!value || value.trim().length === 0) {
+                    return 'API key cannot be empty';
+                }
+                if (!value.startsWith('AIza')) {
+                    return 'Invalid API key format. Should start with "AIza"';
+                }
+                return null;
+            }
+        });
+
+        if (apiKey) {
+            try {
+                const secretStorage = SecretStorageService.getInstance();
+                await secretStorage.storeGeminiApiKey(apiKey);
+                
+                const success = await geminiService.initialize();
+                
+                if (success) {
+                    vscode.window.showInformationMessage('✅ Gemini API key saved successfully! 🤖');
+                    outputChannel.appendLine('✅ Gemini API key configured');
+                } else {
+                    vscode.window.showErrorMessage('❌ Failed to verify Gemini API key');
+                }
+            } catch (error) {
+                vscode.window.showErrorMessage(`Failed to save API key: ${error}`);
+            }
+        }
+    });
+
+    // Generate Fix
+    const generateFixCommand = vscode.commands.registerCommand('baselineGuard.generateFix', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showWarningMessage('No active editor');
+            return;
+        }
+
+        if (!geminiService.isAvailable()) {
+            const setup = await vscode.window.showWarningMessage(
+                'Gemini AI is not configured. Setup now?',
+                'Setup', 'Cancel'
+            );
+            if (setup === 'Setup') {
+                vscode.commands.executeCommand('baselineGuard.setupGeminiKey');
+            }
+            return;
+        }
+
+        const position = editor.selection.active;
+        const diagnostics = vscode.languages.getDiagnostics(editor.document.uri);
+        const diagnostic = diagnostics.find(d => 
+            d.range.contains(position) && d.source === 'BaselineGuard'
+        );
+
+        if (!diagnostic) {
+            vscode.window.showInformationMessage('No compatibility issue at cursor. Place cursor on a warning.');
+            return;
+        }
+
+        vscode.commands.executeCommand(
+            'baselineGuard.generateFixForDiagnostic',
+            editor.document,
+            diagnostic,
+            new vscode.Range(position, position)
+        );
+    });
+
+    // Generate Fix for Diagnostic
+    const generateFixForDiagnosticCommand = vscode.commands.registerCommand(
+        'baselineGuard.generateFixForDiagnostic',
+        async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic, range: vscode.Range) => {
+            if (!geminiService.isAvailable()) {
+                const setup = await vscode.window.showWarningMessage(
+                    'Gemini AI not configured. Setup now?',
+                    'Setup', 'Cancel'
+                );
+                if (setup === 'Setup') {
+                    vscode.commands.executeCommand('baselineGuard.setupGeminiKey');
+                }
+                return;
+            }
+
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Generating AI fix...',
+                cancellable: false
+            }, async () => {
+                try {
+                    const featureId = typeof diagnostic.code === 'object' ? diagnostic.code.value : diagnostic.code;
+                    const feature = apiClient.getFeature(featureId as string);
+
+                    if (!feature) {
+                        vscode.window.showErrorMessage('Feature information not found');
+                        return;
+                    }
+
+                    const startLine = Math.max(0, range.start.line - 3);
+                    const endLine = Math.min(document.lineCount - 1, range.end.line + 3);
+                    let context = '';
+                    for (let i = startLine; i <= endLine; i++) {
+                        context += document.lineAt(i).text + '\n';
+                    }
+
+                    const suggestion = await geminiService.generateFixForLanguage(
+                        feature,
+                        context,
+                        document.languageId
+                    );
+
+                    const formattedContent = `# 🤖 AI Fix for: ${feature.name}
+
+**Language:** ${document.languageId.toUpperCase()}
+**Status:** ${feature.baseline?.status || 'unknown'}
+**File:** ${document.fileName}
+
+---
+
+${suggestion}
+
+---
+
+💡 **Tip:** Test in target browsers
+📚 **Spec:** ${feature.spec.links[0]?.link || 'N/A'}
+`;
+
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: formattedContent,
+                        language: 'markdown'
+                    });
+                    await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+                    
+                    outputChannel.appendLine(`✅ AI fix generated for ${feature.name} (${document.languageId})`);
+
+                } catch (error) {
+                    vscode.window.showErrorMessage(`Failed to generate fix: ${error}`);
+                    outputChannel.appendLine(`❌ Fix generation failed: ${error}`);
+                }
+            });
+        }
+    );
+
+    // Explain Feature
+    const explainFeatureCommand = vscode.commands.registerCommand(
+        'baselineGuard.explainFeature',
+        async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
+            const featureId = typeof diagnostic.code === 'object' ? diagnostic.code.value : diagnostic.code;
+            const feature = apiClient.getFeature(featureId as string);
+
+            if (!feature) {
+                vscode.window.showErrorMessage('Feature information not found');
+                return;
+            }
+
+            const explanation = await geminiService.explainFeature(feature);
+            
+            const doc = await vscode.workspace.openTextDocument({
+                content: `# ${feature.name}\n\n${explanation}`,
+                language: 'markdown'
+            });
+            await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+        }
+    );
+
+    // Show Browser Support
+    const showBrowserSupportCommand = vscode.commands.registerCommand(
+        'baselineGuard.showBrowserSupport',
+        async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
+            const featureId = typeof diagnostic.code === 'object' ? diagnostic.code.value : diagnostic.code;
+            const feature = apiClient.getFeature(featureId as string);
+
+            if (!feature) {
+                vscode.window.showErrorMessage('Feature information not found');
+                return;
+            }
+
+            let message = `Browser Support: ${feature.name}\n\n`;
+            
+            Object.entries(feature.browser_implementations).forEach(([browser, impl]) => {
+                const icon = impl.status === 'available' ? '✅' : '❌';
+                message += `${icon} ${browser}: ${impl.status} (v${impl.version})\n`;
+            });
+
+            vscode.window.showInformationMessage(message, { modal: true });
+        }
     );
     
-    outputChannel.appendLine('✅ All commands registered');
+    // Register all commands
+    context.subscriptions.push(
+        helloCommand, 
+        dashboardCommand,
+        showWebviewCommand,
+        debugApiCommand,  // NEW DEBUG COMMAND
+        refreshCommand, 
+        analyzeFileCommand,
+        toggleCommand,
+        setupKeyCommand,
+        generateFixCommand,
+        generateFixForDiagnosticCommand,
+        explainFeatureCommand,
+        showBrowserSupportCommand
+    );
+    
+    outputChannel.appendLine('✅ All commands registered (including debug)');
 }
 
 export function deactivate() {
