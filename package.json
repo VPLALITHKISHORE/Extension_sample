@@ -1,0 +1,83 @@
+{
+  "name": "baseline-guard",
+  "displayName": "BaselineGuard - Web Compatibility Checker",
+  "description": "Real-time web features compatibility checker using WebStatus API",
+  "version": "1.0.0",
+  "publisher": "BaselineHelper",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "web compatibility",
+    "baseline",
+    "browser support"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "baselineGuard.hello",
+        "title": "Hello BaselineGuard",
+        "category": "BaselineGuard"
+      },
+      {
+        "command": "baselineGuard.openDashboard", 
+        "title": "Open Compatibility Dashboard",
+        "category": "BaselineGuard"
+      },
+      {
+        "command": "baselineGuard.refresh",
+        "title": "Refresh Web Features Data",
+        "category": "BaselineGuard"
+      },
+      {
+        "command": "baselineGuard.analyzeFile",
+        "title": "Analyze Current File",
+        "category": "BaselineGuard"
+      },
+      {
+        "command": "baselineGuard.toggle",
+        "title": "Toggle BaselineGuard",
+        "category": "BaselineGuard"
+      }
+    ],
+    "configuration": {
+      "title": "BaselineGuard",
+      "properties": {
+        "baselineGuard.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable BaselineGuard extension"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "node esbuild.js --production",
+    "compile": "node esbuild.js",
+    "compile-tests": "tsc -p . --outDir dist",
+    "watch": "node esbuild.js --watch",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "20.x",
+    "@typescript-eslint/eslint-plugin": "^7.14.1",
+    "@typescript-eslint/parser": "^7.11.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.5",
+    "esbuild": "^0.21.5",
+    "@vscode/test-cli": "^0.0.9",
+    "@vscode/test-electron": "^2.4.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}

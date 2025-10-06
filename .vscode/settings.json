@@ -1,0 +1,13 @@
+// Place your settings in this file to overwrite default and user settings.
+{
+  "editor.insertSpaces": true,
+  "editor.tabSize": 2,
+  "typescript.preferences.quoteStyle": "single",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true
+  },
+  "files.exclude": {
+    "dist": true,
+    "**/*.vsix": true
+  }
+}
